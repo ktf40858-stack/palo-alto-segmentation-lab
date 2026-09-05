@@ -1,0 +1,89 @@
+# =====================================================================
+# Palo Alto Segmentation Lab - PAN-OS set commands
+# Deployable on a PA-VM (VM-Series) trial. All addresses RFC 1918 /
+# RFC 5737. All secrets are <PLACEHOLDER>. Paste into configure mode.
+# =====================================================================
+
+# --- Zones ------------------------------------------------------------
+set zone TRUST network layer3 ethernet1/2
+set zone DMZ network layer3 ethernet1/3
+set zone SERVERS network layer3 ethernet1/4
+set zone MGMT network layer3 ethernet1/5
+set zone UNTRUST network layer3 ethernet1/1
+
+# --- Interfaces (lab addressing) --------------------------------------
+set network interface ethernet ethernet1/1 layer3 ip 198.51.100.2/30
+set network interface ethernet ethernet1/2 layer3 ip 10.10.0.1/24
+set network interface ethernet ethernet1/3 layer3 ip 10.20.0.1/24
+set network interface ethernet ethernet1/4 layer3 ip 10.30.0.1/24
+set network interface ethernet ethernet1/5 layer3 ip 10.99.0.1/24
+
+# --- Address objects --------------------------------------------------
+set address net-users ip-netmask 10.10.0.0/24
+set address net-dmz ip-netmask 10.20.0.0/24
+set address net-servers ip-netmask 10.30.0.0/24
+set address host-web ip-netmask 10.20.0.10/32
+set address host-app ip-netmask 10.30.0.10/32
+set address host-db ip-netmask 10.30.0.20/32
+set address host-jump ip-netmask 10.10.0.5/32
+
+# --- Least-privilege security rules -----------------------------------
+# Order matters in PAN-OS: first match wins. Specific allows first,
+# then the explicit logged deny at the bottom.
+
+# 1. Users -> the app front-end, on web only. Not the DB, not by IP:port.
+set rulebase security rules users-to-app from TRUST to SERVERS
+set rulebase security rules users-to-app source net-users destination host-app
+set rulebase security rules users-to-app application [ web-browsing ssl ]
+set rulebase security rules users-to-app service application-default
+set rulebase security rules users-to-app action allow
+set rulebase security rules users-to-app log-end yes
+set rulebase security rules users-to-app profile-setting group best-practice
+
+# 2. DMZ web front-end -> app tier, on the app protocol only. One direction.
+set rulebase security rules web-to-app from DMZ to SERVERS
+set rulebase security rules web-to-app source host-web destination host-app
+set rulebase security rules web-to-app application [ web-browsing ssl ]
+set rulebase security rules web-to-app service application-default
+set rulebase security rules web-to-app action allow
+set rulebase security rules web-to-app log-end yes
+
+# 3. App tier -> DB tier, SQL only. The DB never initiates back.
+set rulebase security rules app-to-db from SERVERS to SERVERS
+set rulebase security rules app-to-db source host-app destination host-db
+set rulebase security rules app-to-db application [ mssql-db ]
+set rulebase security rules app-to-db service application-default
+set rulebase security rules app-to-db action allow
+set rulebase security rules app-to-db log-end yes
+
+# 4. Internet access for users and DMZ, App-ID filtered, threat-inspected.
+set rulebase security rules outbound-web from [ TRUST DMZ ] to UNTRUST
+set rulebase security rules outbound-web source [ net-users net-dmz ]
+set rulebase security rules outbound-web destination any
+set rulebase security rules outbound-web application [ web-browsing ssl dns ]
+set rulebase security rules outbound-web service application-default
+set rulebase security rules outbound-web action allow
+set rulebase security rules outbound-web log-end yes
+set rulebase security rules outbound-web profile-setting group best-practice
+
+# 5. Management reachable ONLY from the admin jump host.
+set rulebase security rules mgmt-access from TRUST to MGMT
+set rulebase security rules mgmt-access source host-jump destination net-servers
+set rulebase security rules mgmt-access application [ ssh ms-rdp ]
+set rulebase security rules mgmt-access service application-default
+set rulebase security rules mgmt-access action allow
+set rulebase security rules mgmt-access log-end yes
+
+# --- The explicit, logged, default-deny (East-West and everything else) ---
+# This is the rule that stops lateral movement and, unlike the implicit
+# deny, actually logs what tried to cross a boundary.
+set rulebase security rules deny-all-log from any to any
+set rulebase security rules deny-all-log source any destination any
+set rulebase security rules deny-all-log application any service any
+set rulebase security rules deny-all-log action deny
+set rulebase security rules deny-all-log log-end yes
+
+# --- NAT: users/DMZ to internet -------------------------------------
+set rulebase nat rules outbound-nat from [ TRUST DMZ ] to UNTRUST
+set rulebase nat rules outbound-nat source any destination any service any
+set rulebase nat rules outbound-nat source-translation dynamic-ip-and-port interface-address interface ethernet1/1
